@@ -263,15 +263,11 @@ async def add_security_headers(request, call_next):
 app.add_middleware(
     CORSMiddleware,
 
-    # Development CORS:
-    # Allow localhost / 127.0.0.1 from any development port.
-    # This prevents the browser preflight OPTIONS request from being
-    # rejected when Next.js is running on a different local port.
-    allow_origin_regex=r"^https?://(localhost|127\.0.0.1)(:\d+)?$",
-
+    # Production + development frontend origins.
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://timepilot-frontend-nine.vercel.app",
     ],
 
     allow_credentials=True,
@@ -286,14 +282,7 @@ app.add_middleware(
     ],
 
     allow_headers=[
-        "Accept",
-        "Accept-Language",
-        "Content-Type",
-        "Authorization",
-        "Origin",
-        "Referer",
-        "User-Agent",
-        "X-Requested-With",
+        "*",
     ],
 
     expose_headers=[
