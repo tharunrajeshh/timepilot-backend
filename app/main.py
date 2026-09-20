@@ -121,6 +121,8 @@ def send_verification_email(email: str, name: str, verification_token: str):
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type": "application/json",
+            "User-Agent": "TimePilot/1.0",
+            "Accept": "application/json",
         },
         method="POST",
     )
