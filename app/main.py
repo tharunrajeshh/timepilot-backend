@@ -1,5 +1,9 @@
+import hashlib
 import json
 import os
+import secrets
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -69,6 +73,68 @@ GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-3.6-flash",
 )
+
+
+# ============================================================
+# EMAIL VERIFICATION
+# ============================================================
+
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "TimePilot <onboarding@resend.dev>")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+
+def hash_verification_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def send_verification_email(email: str, name: str, verification_token: str):
+    if not RESEND_API_KEY:
+        raise RuntimeError("RESEND_API_KEY is not configured.")
+
+    verification_url = f"{FRONTEND_URL}/verify-email?token={verification_token}"
+
+    html = f"""
+    <html><body style="margin:0;padding:40px 20px;background:#050505;font-family:Arial;color:#fff;">
+      <div style="max-width:560px;margin:auto;padding:40px;border-radius:24px;background:#111;border:1px solid #2a2a2a;">
+        <div style="font-size:24px;font-weight:bold;color:#00e5a0;">TimePilot</div>
+        <h1 style="margin:28px 0 12px;">Verify your TimePilot account</h1>
+        <p style="color:#a1a1aa;font-size:16px;line-height:1.7;">Hi {name},</p>
+        <p style="color:#a1a1aa;font-size:16px;line-height:1.7;">Thanks for creating your TimePilot account. Click below to verify your email address.</p>
+        <p style="margin:32px 0;"><a href="{verification_url}" style="display:inline-block;padding:16px 28px;border-radius:12px;background:#fff;color:#000;text-decoration:none;font-weight:600;">Verify my email</a></p>
+        <p style="color:#71717a;font-size:13px;">This verification link expires in 24 hours.</p>
+        <p style="color:#52525b;font-size:12px;word-break:break-all;">{verification_url}</p>
+      </div>
+    </body></html>
+    """
+
+    payload = json.dumps({
+        "from": RESEND_FROM_EMAIL,
+        "to": [email],
+        "subject": "Verify your TimePilot account",
+        "html": html,
+    }).encode("utf-8")
+
+    request = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            print("VERIFICATION EMAIL SENT:", response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        print("RESEND EMAIL ERROR:", error.code, body)
+        raise RuntimeError("Could not send verification email.") from error
+    except Exception as error:
+        print("EMAIL SENDING ERROR:", repr(error))
+        raise RuntimeError("Could not send verification email.") from error
 
 
 # ============================================================
@@ -231,6 +297,25 @@ Base.metadata.create_all(
 )
 
 
+def migrate_authentication_columns():
+    statements = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_hash VARCHAR(64)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_expires_at TIMESTAMP",
+        "CREATE INDEX IF NOT EXISTS ix_users_verification_token_hash ON users (verification_token_hash)",
+    ]
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+try:
+    migrate_authentication_columns()
+    print("Authentication database migration completed.")
+except Exception as error:
+    print("AUTHENTICATION DATABASE MIGRATION ERROR:", repr(error))
+
+
 # ============================================================
 # SECURITY HEADERS
 # ============================================================
@@ -378,6 +463,22 @@ class SignupResponse(BaseModel):
     email: str
 
 
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(..., min_length=32, max_length=200)
+
+
+class VerifyEmailResponse(BaseModel):
+    message: str
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class ResendVerificationResponse(BaseModel):
+    message: str
+
+
 class LoginRequest(BaseModel):
 
     email: EmailStr
@@ -483,10 +584,17 @@ def signup(
         password
     )
 
+    verification_token = secrets.token_urlsafe(48)
+    verification_token_hash = hash_verification_token(verification_token)
+    verification_expires_at = datetime.utcnow() + timedelta(hours=24)
+
     new_user = models.User(
         name=name,
         email=email,
         password_hash=password_hash,
+        email_verified=False,
+        verification_token_hash=verification_token_hash,
+        verification_token_expires_at=verification_expires_at,
     )
 
     db.add(new_user)
@@ -511,12 +619,105 @@ def signup(
             detail="Could not create account.",
         )
 
+    try:
+        send_verification_email(
+            email=new_user.email,
+            name=new_user.name,
+            verification_token=verification_token,
+        )
+    except Exception as error:
+        print("VERIFICATION EMAIL ERROR:", repr(error))
+        db.delete(new_user)
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Account could not be created because the verification email could not be sent.",
+        )
+
     return SignupResponse(
-        message="Account created successfully.",
+        message="Verification email sent.",
         user_id=new_user.id,
         name=new_user.name,
         email=new_user.email,
     )
+
+
+# ============================================================
+# VERIFY EMAIL
+# ============================================================
+
+@app.post("/auth/verify-email", response_model=VerifyEmailResponse)
+@limiter.limit("10/minute")
+def verify_email(
+    request: Request,
+    data: VerifyEmailRequest,
+    db: Session = Depends(get_db),
+):
+    token_hash = hash_verification_token(data.token)
+    user = (
+        db.query(models.User)
+        .filter(models.User.verification_token_hash == token_hash)
+        .first()
+    )
+
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification link.")
+
+    if user.email_verified:
+        return VerifyEmailResponse(message="Email is already verified.")
+
+    if (
+        user.verification_token_expires_at is None
+        or user.verification_token_expires_at < datetime.utcnow()
+    ):
+        raise HTTPException(status_code=400, detail="Verification link has expired.")
+
+    user.email_verified = True
+    user.verification_token_hash = None
+    user.verification_token_expires_at = None
+    db.commit()
+
+    return VerifyEmailResponse(message="Email verified successfully.")
+
+
+# ============================================================
+# RESEND VERIFICATION EMAIL
+# ============================================================
+
+@app.post("/auth/resend-verification", response_model=ResendVerificationResponse)
+@limiter.limit("3/10minutes")
+def resend_verification(
+    request: Request,
+    data: ResendVerificationRequest,
+    db: Session = Depends(get_db),
+):
+    email = str(data.email).strip().lower()
+    user = db.query(models.User).filter(models.User.email == email).first()
+
+    if user is None:
+        return ResendVerificationResponse(
+            message="If an account exists for this email, a verification email has been sent."
+        )
+
+    if user.email_verified:
+        return ResendVerificationResponse(message="Email is already verified.")
+
+    verification_token = secrets.token_urlsafe(48)
+    user.verification_token_hash = hash_verification_token(verification_token)
+    user.verification_token_expires_at = datetime.utcnow() + timedelta(hours=24)
+    db.commit()
+
+    try:
+        send_verification_email(
+            email=user.email,
+            name=user.name,
+            verification_token=verification_token,
+        )
+    except Exception as error:
+        print("RESEND VERIFICATION ERROR:", repr(error))
+        raise HTTPException(status_code=503, detail="Could not send the verification email.")
+
+    return ResendVerificationResponse(message="Verification email sent.")
 
 
 # ============================================================
@@ -565,6 +766,12 @@ def login(
         raise HTTPException(
             status_code=401,
             detail="Invalid email or password.",
+        )
+
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email before logging in.",
         )
 
     now = datetime.utcnow()
