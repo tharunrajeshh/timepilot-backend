@@ -4,6 +4,7 @@ import os
 import secrets
 import urllib.error
 import urllib.request
+
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -18,6 +19,7 @@ from fastapi import (
 
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
+
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -27,9 +29,6 @@ from fastapi.security import (
     HTTPBearer,
     HTTPAuthorizationCredentials,
 )
-
-from google import genai
-from google.genai import types
 
 from pydantic import (
     BaseModel,
@@ -42,6 +41,8 @@ from sqlalchemy.orm import Session
 
 from passlib.context import CryptContext
 from jose import jwt
+
+from openai import OpenAI
 
 from .database import Base, engine, get_db
 from . import models
@@ -65,14 +66,54 @@ print(
 )
 
 
-GEMINI_API_KEY = os.getenv(
-    "GEMINI_API_KEY"
+# ============================================================
+# Z.AI / GLM-5.2
+# ============================================================
+
+ZAI_API_KEY = os.getenv("ZAI_API_KEY")
+
+ZAI_MODEL = os.getenv(
+    "ZAI_MODEL",
+    "glm-5.2",
 )
 
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-3.6-flash",
+ZAI_BASE_URL = os.getenv(
+    "ZAI_BASE_URL",
+    "https://api.z.ai/api/paas/v4",
 )
+
+zai_client = None
+
+
+if ZAI_API_KEY:
+
+    try:
+
+        zai_client = OpenAI(
+            api_key=ZAI_API_KEY,
+            base_url=ZAI_BASE_URL,
+        )
+
+        print(
+            f"Z.ai AI configured: {ZAI_MODEL}"
+        )
+
+        print(
+            f"Z.ai Base URL: {ZAI_BASE_URL}"
+        )
+
+    except Exception as error:
+
+        print(
+            "Z.AI CLIENT ERROR:",
+            repr(error),
+        )
+
+else:
+
+    print(
+        "WARNING: ZAI_API_KEY is not configured."
+    )
 
 
 # ============================================================
@@ -80,46 +121,163 @@ GEMINI_MODEL = os.getenv(
 # ============================================================
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
-RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "TimePilot <onboarding@resend.dev>")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+RESEND_FROM_EMAIL = os.getenv(
+    "RESEND_FROM_EMAIL",
+    "TimePilot <onboarding@resend.dev>",
+)
+
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:3000",
+)
 
 
-def hash_verification_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def hash_verification_token(
+    token: str,
+) -> str:
+
+    return hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
 
 
-def send_verification_email(email: str, name: str, verification_token: str):
+def send_verification_email(
+    email: str,
+    name: str,
+    verification_token: str,
+):
+
     if not RESEND_API_KEY:
-        raise RuntimeError("RESEND_API_KEY is not configured.")
 
-    verification_url = f"{FRONTEND_URL}/verify-email?token={verification_token}"
+        raise RuntimeError(
+            "RESEND_API_KEY is not configured."
+        )
+
+    verification_url = (
+        f"{FRONTEND_URL}"
+        f"/verify-email"
+        f"?token={verification_token}"
+    )
 
     html = f"""
-    <html><body style="margin:0;padding:40px 20px;background:#050505;font-family:Arial;color:#fff;">
-      <div style="max-width:560px;margin:auto;padding:40px;border-radius:24px;background:#111;border:1px solid #2a2a2a;">
-        <div style="font-size:24px;font-weight:bold;color:#00e5a0;">TimePilot</div>
-        <h1 style="margin:28px 0 12px;">Verify your TimePilot account</h1>
-        <p style="color:#a1a1aa;font-size:16px;line-height:1.7;">Hi {name},</p>
-        <p style="color:#a1a1aa;font-size:16px;line-height:1.7;">Thanks for creating your TimePilot account. Click below to verify your email address.</p>
-        <p style="margin:32px 0;"><a href="{verification_url}" style="display:inline-block;padding:16px 28px;border-radius:12px;background:#fff;color:#000;text-decoration:none;font-weight:600;">Verify my email</a></p>
-        <p style="color:#71717a;font-size:13px;">This verification link expires in 24 hours.</p>
-        <p style="color:#52525b;font-size:12px;word-break:break-all;">{verification_url}</p>
+    <html>
+    <body
+        style="
+            margin:0;
+            padding:40px 20px;
+            background:#050505;
+            font-family:Arial;
+            color:#fff;
+        "
+    >
+
+      <div
+        style="
+            max-width:560px;
+            margin:auto;
+            padding:40px;
+            border-radius:24px;
+            background:#111;
+            border:1px solid #2a2a2a;
+        "
+      >
+
+        <div
+            style="
+                font-size:24px;
+                font-weight:bold;
+                color:#00e5a0;
+            "
+        >
+            TimePilot
+        </div>
+
+        <h1 style="margin:28px 0 12px;">
+            Verify your TimePilot account
+        </h1>
+
+        <p
+            style="
+                color:#a1a1aa;
+                font-size:16px;
+                line-height:1.7;
+            "
+        >
+            Hi {name},
+        </p>
+
+        <p
+            style="
+                color:#a1a1aa;
+                font-size:16px;
+                line-height:1.7;
+            "
+        >
+            Thanks for creating your TimePilot account.
+            Click below to verify your email address.
+        </p>
+
+        <p style="margin:32px 0;">
+
+            <a
+                href="{verification_url}"
+                style="
+                    display:inline-block;
+                    padding:16px 28px;
+                    border-radius:12px;
+                    background:#fff;
+                    color:#000;
+                    text-decoration:none;
+                    font-weight:600;
+                "
+            >
+                Verify my email
+            </a>
+
+        </p>
+
+        <p
+            style="
+                color:#71717a;
+                font-size:13px;
+            "
+        >
+            This verification link expires in 24 hours.
+        </p>
+
+        <p
+            style="
+                color:#52525b;
+                font-size:12px;
+                word-break:break-all;
+            "
+        >
+            {verification_url}
+        </p>
+
       </div>
-    </body></html>
+
+    </body>
+    </html>
     """
 
-    payload = json.dumps({
-        "from": RESEND_FROM_EMAIL,
-        "to": [email],
-        "subject": "Verify your TimePilot account",
-        "html": html,
-    }).encode("utf-8")
+    payload = json.dumps(
+        {
+            "from": RESEND_FROM_EMAIL,
+            "to": [email],
+            "subject": "Verify your TimePilot account",
+            "html": html,
+        }
+    ).encode("utf-8")
 
     request = urllib.request.Request(
         "https://api.resend.com/emails",
         data=payload,
         headers={
-            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Authorization": (
+                f"Bearer {RESEND_API_KEY}"
+            ),
             "Content-Type": "application/json",
             "User-Agent": "TimePilot/1.0",
             "Accept": "application/json",
@@ -128,48 +286,46 @@ def send_verification_email(email: str, name: str, verification_token: str):
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            print("VERIFICATION EMAIL SENT:", response.read().decode("utf-8"))
+
+        with urllib.request.urlopen(
+            request,
+            timeout=15,
+        ) as response:
+
+            print(
+                "VERIFICATION EMAIL SENT:",
+                response.read().decode(
+                    "utf-8"
+                ),
+            )
+
     except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8", errors="replace")
-        print("RESEND EMAIL ERROR:", error.code, body)
-        raise RuntimeError("Could not send verification email.") from error
-    except Exception as error:
-        print("EMAIL SENDING ERROR:", repr(error))
-        raise RuntimeError("Could not send verification email.") from error
 
-
-# ============================================================
-# GEMINI CLIENT
-# ============================================================
-
-gemini_client = None
-
-
-if GEMINI_API_KEY:
-
-    try:
-
-        gemini_client = genai.Client(
-            api_key=GEMINI_API_KEY
+        body = error.read().decode(
+            "utf-8",
+            errors="replace",
         )
 
         print(
-            f"Gemini AI configured: {GEMINI_MODEL}"
+            "RESEND EMAIL ERROR:",
+            error.code,
+            body,
         )
+
+        raise RuntimeError(
+            "Could not send verification email."
+        ) from error
 
     except Exception as error:
 
         print(
-            "GEMINI CLIENT ERROR:",
+            "EMAIL SENDING ERROR:",
             repr(error),
         )
 
-else:
-
-    print(
-        "WARNING: GEMINI_API_KEY is not configured."
-    )
+        raise RuntimeError(
+            "Could not send verification email."
+        ) from error
 
 
 # ============================================================
@@ -186,17 +342,24 @@ pwd_context = CryptContext(
 # JWT
 # ============================================================
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_SECRET_KEY = os.getenv(
+    "JWT_SECRET_KEY"
+)
 
 if not JWT_SECRET_KEY:
+
     raise RuntimeError(
         "JWT_SECRET_KEY is not configured. "
         "Add it to backend/.env before starting TimePilot."
     )
 
+
 JWT_ALGORITHM = "HS256"
+
 JWT_ISSUER = "timepilot"
+
 JWT_AUDIENCE = "timepilot-client"
+
 JWT_EXPIRE_MINUTES = 60 * 24
 
 
@@ -270,7 +433,9 @@ def get_current_user(
 # RATE LIMITING
 # ============================================================
 
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(
+    key_func=get_remote_address
+)
 
 
 # ============================================================
@@ -284,6 +449,7 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
+
 app.add_exception_handler(
     RateLimitExceeded,
     _rate_limit_exceeded_handler,
@@ -300,22 +466,59 @@ Base.metadata.create_all(
 
 
 def migrate_authentication_columns():
+
     statements = [
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT TRUE",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_hash VARCHAR(64)",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_expires_at TIMESTAMP",
-        "CREATE INDEX IF NOT EXISTS ix_users_verification_token_hash ON users (verification_token_hash)",
+
+        (
+            "ALTER TABLE users "
+            "ADD COLUMN IF NOT EXISTS "
+            "email_verified BOOLEAN "
+            "NOT NULL DEFAULT TRUE"
+        ),
+
+        (
+            "ALTER TABLE users "
+            "ADD COLUMN IF NOT EXISTS "
+            "verification_token_hash VARCHAR(64)"
+        ),
+
+        (
+            "ALTER TABLE users "
+            "ADD COLUMN IF NOT EXISTS "
+            "verification_token_expires_at TIMESTAMP"
+        ),
+
+        (
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_users_verification_token_hash "
+            "ON users (verification_token_hash)"
+        ),
+
     ]
+
     with engine.begin() as connection:
+
         for statement in statements:
-            connection.execute(text(statement))
+
+            connection.execute(
+                text(statement)
+            )
 
 
 try:
+
     migrate_authentication_columns()
-    print("Authentication database migration completed.")
+
+    print(
+        "Authentication database migration completed."
+    )
+
 except Exception as error:
-    print("AUTHENTICATION DATABASE MIGRATION ERROR:", repr(error))
+
+    print(
+        "AUTHENTICATION DATABASE MIGRATION ERROR:",
+        repr(error),
+    )
 
 
 # ============================================================
@@ -323,22 +526,48 @@ except Exception as error:
 # ============================================================
 
 @app.middleware("http")
-async def add_security_headers(request, call_next):
-    response: Response = await call_next(request)
+async def add_security_headers(
+    request,
+    call_next,
+):
 
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = (
-        "strict-origin-when-cross-origin"
-    )
-    response.headers["Permissions-Policy"] = (
-        "camera=(), microphone=(), geolocation=(), "
-        "payment=(), usb=()"
+    response: Response = await call_next(
+        request
     )
 
-    # Prevent shared/proxy caches from storing authenticated data.
-    if request.url.path.startswith(("/auth/", "/tasks", "/agent/")):
-        response.headers["Cache-Control"] = "no-store"
+    response.headers[
+        "X-Frame-Options"
+    ] = "DENY"
+
+    response.headers[
+        "X-Content-Type-Options"
+    ] = "nosniff"
+
+    response.headers[
+        "Referrer-Policy"
+    ] = "strict-origin-when-cross-origin"
+
+    response.headers[
+        "Permissions-Policy"
+    ] = (
+        "camera=(), "
+        "microphone=(), "
+        "geolocation=(), "
+        "payment=(), "
+        "usb=()"
+    )
+
+    if request.url.path.startswith(
+        (
+            "/auth/",
+            "/tasks",
+            "/agent/",
+        )
+    ):
+
+        response.headers[
+            "Cache-Control"
+        ] = "no-store"
 
     return response
 
@@ -350,7 +579,6 @@ async def add_security_headers(request, call_next):
 app.add_middleware(
     CORSMiddleware,
 
-    # Production + development frontend origins.
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
@@ -420,16 +648,17 @@ def database_test():
 
 
 # ============================================================
-# GEMINI STATUS
+# Z.AI STATUS
 # ============================================================
 
 @app.get("/agent/status")
 def agent_status():
 
     return {
-        "provider": "google-gemini",
-        "configured": gemini_client is not None,
-        "model": GEMINI_MODEL,
+        "provider": "z.ai",
+        "configured": zai_client is not None,
+        "model": ZAI_MODEL,
+        "base_url": ZAI_BASE_URL,
     }
 
 
@@ -466,18 +695,26 @@ class SignupResponse(BaseModel):
 
 
 class VerifyEmailRequest(BaseModel):
-    token: str = Field(..., min_length=32, max_length=200)
+
+    token: str = Field(
+        ...,
+        min_length=32,
+        max_length=200,
+    )
 
 
 class VerifyEmailResponse(BaseModel):
+
     message: str
 
 
 class ResendVerificationRequest(BaseModel):
+
     email: EmailStr
 
 
 class ResendVerificationResponse(BaseModel):
+
     message: str
 
 
@@ -560,13 +797,6 @@ def signup(
             detail="Password must not exceed 128 characters.",
         )
 
-    if len(password) > 128:
-
-        raise HTTPException(
-            status_code=400,
-            detail="Password must not exceed 128 characters.",
-        )
-
     existing_user = (
         db.query(models.User)
         .filter(
@@ -586,9 +816,20 @@ def signup(
         password
     )
 
-    verification_token = secrets.token_urlsafe(48)
-    verification_token_hash = hash_verification_token(verification_token)
-    verification_expires_at = datetime.utcnow() + timedelta(hours=24)
+    verification_token = secrets.token_urlsafe(
+        48
+    )
+
+    verification_token_hash = (
+        hash_verification_token(
+            verification_token
+        )
+    )
+
+    verification_expires_at = (
+        datetime.utcnow()
+        + timedelta(hours=24)
+    )
 
     new_user = models.User(
         name=name,
@@ -622,18 +863,30 @@ def signup(
         )
 
     try:
+
         send_verification_email(
             email=new_user.email,
             name=new_user.name,
             verification_token=verification_token,
         )
+
     except Exception as error:
-        print("VERIFICATION EMAIL ERROR:", repr(error))
+
+        print(
+            "VERIFICATION EMAIL ERROR:",
+            repr(error),
+        )
+
         db.delete(new_user)
+
         db.commit()
+
         raise HTTPException(
             status_code=503,
-            detail="Account could not be created because the verification email could not be sent.",
+            detail=(
+                "Account could not be created because "
+                "the verification email could not be sent."
+            ),
         )
 
     return SignupResponse(
@@ -648,78 +901,151 @@ def signup(
 # VERIFY EMAIL
 # ============================================================
 
-@app.post("/auth/verify-email", response_model=VerifyEmailResponse)
+@app.post(
+    "/auth/verify-email",
+    response_model=VerifyEmailResponse,
+)
 @limiter.limit("10/minute")
 def verify_email(
     request: Request,
     data: VerifyEmailRequest,
     db: Session = Depends(get_db),
 ):
-    token_hash = hash_verification_token(data.token)
+
+    token_hash = hash_verification_token(
+        data.token
+    )
+
     user = (
         db.query(models.User)
-        .filter(models.User.verification_token_hash == token_hash)
+        .filter(
+            models.User.verification_token_hash
+            == token_hash
+        )
         .first()
     )
 
     if user is None:
-        raise HTTPException(status_code=400, detail="Invalid or expired verification link.")
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired verification link.",
+        )
 
     if user.email_verified:
-        return VerifyEmailResponse(message="Email is already verified.")
+
+        return VerifyEmailResponse(
+            message="Email is already verified."
+        )
 
     if (
         user.verification_token_expires_at is None
-        or user.verification_token_expires_at < datetime.utcnow()
+        or user.verification_token_expires_at
+        < datetime.utcnow()
     ):
-        raise HTTPException(status_code=400, detail="Verification link has expired.")
+
+        raise HTTPException(
+            status_code=400,
+            detail="Verification link has expired.",
+        )
 
     user.email_verified = True
+
     user.verification_token_hash = None
+
     user.verification_token_expires_at = None
+
     db.commit()
 
-    return VerifyEmailResponse(message="Email verified successfully.")
+    return VerifyEmailResponse(
+        message="Email verified successfully."
+    )
 
 
 # ============================================================
 # RESEND VERIFICATION EMAIL
 # ============================================================
 
-@app.post("/auth/resend-verification", response_model=ResendVerificationResponse)
+@app.post(
+    "/auth/resend-verification",
+    response_model=ResendVerificationResponse,
+)
 @limiter.limit("3/10minutes")
 def resend_verification(
     request: Request,
     data: ResendVerificationRequest,
     db: Session = Depends(get_db),
 ):
-    email = str(data.email).strip().lower()
-    user = db.query(models.User).filter(models.User.email == email).first()
+
+    email = (
+        str(data.email)
+        .strip()
+        .lower()
+    )
+
+    user = (
+        db.query(models.User)
+        .filter(
+            models.User.email == email
+        )
+        .first()
+    )
 
     if user is None:
+
         return ResendVerificationResponse(
-            message="If an account exists for this email, a verification email has been sent."
+            message=(
+                "If an account exists for this email, "
+                "a verification email has been sent."
+            )
         )
 
     if user.email_verified:
-        return ResendVerificationResponse(message="Email is already verified.")
 
-    verification_token = secrets.token_urlsafe(48)
-    user.verification_token_hash = hash_verification_token(verification_token)
-    user.verification_token_expires_at = datetime.utcnow() + timedelta(hours=24)
+        return ResendVerificationResponse(
+            message="Email is already verified."
+        )
+
+    verification_token = secrets.token_urlsafe(
+        48
+    )
+
+    user.verification_token_hash = (
+        hash_verification_token(
+            verification_token
+        )
+    )
+
+    user.verification_token_expires_at = (
+        datetime.utcnow()
+        + timedelta(hours=24)
+    )
+
     db.commit()
 
     try:
+
         send_verification_email(
             email=user.email,
             name=user.name,
             verification_token=verification_token,
         )
-    except Exception as error:
-        print("RESEND VERIFICATION ERROR:", repr(error))
-        raise HTTPException(status_code=503, detail="Could not send the verification email.")
 
-    return ResendVerificationResponse(message="Verification email sent.")
+    except Exception as error:
+
+        print(
+            "RESEND VERIFICATION ERROR:",
+            repr(error),
+        )
+
+        raise HTTPException(
+            status_code=503,
+            detail="Could not send the verification email.",
+        )
+
+    return ResendVerificationResponse(
+        message="Verification email sent."
+    )
 
 
 # ============================================================
@@ -771,14 +1097,19 @@ def login(
         )
 
     if not user.email_verified:
+
         raise HTTPException(
             status_code=403,
             detail="Please verify your email before logging in.",
         )
 
     now = datetime.utcnow()
-    expires_at = now + timedelta(
-        minutes=JWT_EXPIRE_MINUTES
+
+    expires_at = (
+        now
+        + timedelta(
+            minutes=JWT_EXPIRE_MINUTES
+        )
     )
 
     token_payload = {
@@ -797,19 +1128,12 @@ def login(
     )
 
     return LoginResponse(
-
         message="Login successful.",
-
         access_token=access_token,
-
         token_type="bearer",
-
         user_id=user.id,
-
         name=user.name,
-
         email=user.email,
-
     )
 
 
@@ -822,31 +1146,20 @@ def login(
     response_model=TaskResponse,
 )
 def create_task(
-
     task: TaskCreate,
-
     db: Session = Depends(get_db),
-
     current_user: models.User = Depends(
         get_current_user
     ),
-
 ):
 
     new_task = models.Task(
-
         user_id=current_user.id,
-
         title=task.title,
-
         description=task.description,
-
         priority=task.priority,
-
         estimated_minutes=task.estimated_minutes,
-
         deadline=task.deadline,
-
     )
 
     db.add(new_task)
@@ -867,30 +1180,22 @@ def create_task(
     response_model=list[TaskResponse],
 )
 def get_tasks(
-
     db: Session = Depends(get_db),
-
     current_user: models.User = Depends(
         get_current_user
     ),
-
 ):
 
     tasks = (
-
         db.query(models.Task)
-
         .filter(
             models.Task.user_id
             == current_user.id
         )
-
         .order_by(
             models.Task.created_at.desc()
         )
-
         .all()
-
     )
 
     return tasks
@@ -905,32 +1210,21 @@ def get_tasks(
     response_model=TaskResponse,
 )
 def get_task(
-
     task_id: int,
-
     db: Session = Depends(get_db),
-
     current_user: models.User = Depends(
         get_current_user
     ),
-
 ):
 
     task = (
-
         db.query(models.Task)
-
         .filter(
-
             models.Task.id == task_id,
-
             models.Task.user_id
             == current_user.id,
-
         )
-
         .first()
-
     )
 
     if task is None:
@@ -952,34 +1246,22 @@ def get_task(
     response_model=TaskResponse,
 )
 def update_task(
-
     task_id: int,
-
     task_data: TaskUpdate,
-
     db: Session = Depends(get_db),
-
     current_user: models.User = Depends(
         get_current_user
     ),
-
 ):
 
     task = (
-
         db.query(models.Task)
-
         .filter(
-
             models.Task.id == task_id,
-
             models.Task.user_id
             == current_user.id,
-
         )
-
         .first()
-
     )
 
     if task is None:
@@ -1016,32 +1298,21 @@ def update_task(
     "/tasks/{task_id}"
 )
 def delete_task(
-
     task_id: int,
-
     db: Session = Depends(get_db),
-
     current_user: models.User = Depends(
         get_current_user
     ),
-
 ):
 
     task = (
-
         db.query(models.Task)
-
         .filter(
-
             models.Task.id == task_id,
-
             models.Task.user_id
             == current_user.id,
-
         )
-
         .first()
-
     )
 
     if task is None:
@@ -1106,7 +1377,9 @@ class AITaskData(BaseModel):
 class AIChatResponse(BaseModel):
 
     action: str = "chat"
+
     response: str
+
     task: Optional[AITaskData] = None
 
 
@@ -1196,14 +1469,18 @@ def agent_chat(
     request: Request,
     data: ChatRequest,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(
+        get_current_user
+    ),
 ):
-    if gemini_client is None:
+
+    if zai_client is None:
+
         raise HTTPException(
             status_code=503,
             detail=(
-                "Gemini AI is not configured. "
-                "Add GEMINI_API_KEY to backend/.env "
+                "Z.ai AI is not configured. "
+                "Add ZAI_API_KEY to backend/.env "
                 "and restart the backend."
             ),
         )
@@ -1211,12 +1488,14 @@ def agent_chat(
     message = data.message.strip()
 
     if not message:
+
         raise HTTPException(
             status_code=400,
             detail="Message cannot be empty.",
         )
 
     if len(message) > 4000:
+
         raise HTTPException(
             status_code=413,
             detail="AI message must not exceed 4000 characters.",
@@ -1224,26 +1503,40 @@ def agent_chat(
 
     tasks = (
         db.query(models.Task)
-        .filter(models.Task.user_id == current_user.id)
-        .order_by(models.Task.created_at.desc())
+        .filter(
+            models.Task.user_id
+            == current_user.id
+        )
+        .order_by(
+            models.Task.created_at.desc()
+        )
         .all()
     )
 
-    tasks_context = build_task_context(tasks)
+    tasks_context = build_task_context(
+        tasks
+    )
+
     now = datetime.now()
 
     instructions = f"""
-You are TimePilot, an AI-powered personal time-management assistant.
+You are TimePilot, an AI-powered personal
+time-management assistant.
 
 The current local date and time is:
+
 {now.isoformat(timespec="minutes")}
 
-Your most important job is to understand whether the user wants
-to CREATE A NEW TASK in their TimePilot task list.
+Your most important job is to understand
+whether the user wants to CREATE A NEW TASK
+in their TimePilot task list.
 
 Return ONLY valid JSON.
+
 Do not use markdown.
+
 Do not use code fences.
+
 Do not add any text before or after the JSON.
 
 For a normal conversation, return:
@@ -1270,21 +1563,28 @@ For a clear task-creation request, return:
 
 TASK CREATION RULES:
 
-1. Create a task ONLY when the user clearly asks to add,
-   create, make, remember, put, track, or schedule a NEW task.
+1. Create a task ONLY when the user clearly asks
+   to add, create, make, remember, put, track,
+   or schedule a NEW task.
 
-2. Advice, planning, recommendations, information, or asking
-   what existing task to work on next means action="chat".
+2. Advice, planning, recommendations,
+   information, or asking what existing task
+   to work on next means action="chat".
 
 3. Extract a concise, actionable task title.
 
-4. Convert relative dates using the current date/time above.
+4. Convert relative dates using the current
+   date/time above.
 
-5. If the user gives a specific time, include it in deadline.
+5. If the user gives a specific time,
+   include it in deadline.
 
-6. If the user gives only a date, use 18:00 local time.
+6. If the user gives only a date,
+   use 18:00 local time.
 
-7. If no deadline is given, deadline MUST be null.
+7. If no deadline is given,
+   deadline MUST be null.
+
    NEVER invent a deadline.
 
 8. Default priority to "medium".
@@ -1298,10 +1598,13 @@ TASK CREATION RULES:
 
 12. Do not create duplicate tasks.
 
-13. "What should I work on next?", "plan my day",
-    and "what do I have today?" are action="chat".
+13. "What should I work on next?",
+    "plan my day", and
+    "what do I have today?"
+    are action="chat".
 
-14. Never claim a task was created unless action="create_task".
+14. Never claim a task was created
+    unless action="create_task".
 
 Existing TimePilot tasks:
 
@@ -1310,91 +1613,120 @@ Existing TimePilot tasks:
 
     prompt = f"""
 User name:
+
 {current_user.name}
 
 User request:
+
 {message}
 """
 
     try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=instructions,
-                max_output_tokens=1000,
-                response_mime_type="application/json",
-                response_schema=AIChatResponse,
-            ),
+
+        response = zai_client.chat.completions.create(
+            model=ZAI_MODEL,
+
+            messages=[
+                {
+                    "role": "system",
+                    "content": instructions,
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+
+            temperature=0.2,
+
+            max_tokens=1000,
         )
 
-        parsed = getattr(response, "parsed", None)
+        raw_text = (
+            response.choices[0]
+            .message
+            .content
+            if response.choices
+            else ""
+        )
 
-        if parsed is not None:
-            if isinstance(parsed, AIChatResponse):
-                ai_result = parsed
-            elif isinstance(parsed, dict):
-                ai_result = AIChatResponse.model_validate(parsed)
-            else:
-                ai_result = AIChatResponse.model_validate(parsed)
-        else:
-            raw_text = (
-                getattr(response, "text", None) or ""
-            ).strip()
+        if not raw_text:
 
-            if not raw_text:
-                raise ValueError(
-                    "Gemini returned an empty structured response."
-                )
-
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-
-            raw_text = raw_text.strip()
-
-            try:
-                parsed = json.loads(raw_text)
-            except json.JSONDecodeError as error:
-                raise ValueError(
-                    "Gemini returned invalid JSON. "
-                    "Please try the request again."
-                ) from error
-
-            ai_result = AIChatResponse.model_validate(parsed)
-
-        # IMPORTANT:
-        # Convert Pydantic AIChatResponse to a plain dictionary
-        # before using .get().
-        if isinstance(ai_result, AIChatResponse):
-            ai_data = ai_result.model_dump()
-        elif isinstance(ai_result, dict):
-            ai_data = ai_result
-        else:
-            ai_data = (
-                AIChatResponse
-                .model_validate(ai_result)
-                .model_dump()
+            raise ValueError(
+                "Z.ai returned an empty response."
             )
 
+        raw_text = raw_text.strip()
+
+        if raw_text.startswith(
+            "```json"
+        ):
+
+            raw_text = raw_text[7:]
+
+        elif raw_text.startswith(
+            "```"
+        ):
+
+            raw_text = raw_text[3:]
+
+        if raw_text.endswith(
+            "```"
+        ):
+
+            raw_text = raw_text[:-3]
+
+        raw_text = raw_text.strip()
+
+        try:
+
+            parsed = json.loads(
+                raw_text
+            )
+
+        except json.JSONDecodeError as error:
+
+            raise ValueError(
+                "Z.ai returned invalid JSON. "
+                "Please try the request again."
+            ) from error
+
+        ai_result = (
+            AIChatResponse
+            .model_validate(parsed)
+        )
+
+        ai_data = ai_result.model_dump()
+
         action = str(
-            ai_data.get("action", "chat") or "chat"
+            ai_data.get(
+                "action",
+                "chat",
+            )
+            or "chat"
         ).strip().lower()
 
         ai_text = str(
-            ai_data.get("response", "") or ""
+            ai_data.get(
+                "response",
+                "",
+            )
+            or ""
         ).strip()
 
-        task_data = ai_data.get("task")
+        task_data = ai_data.get(
+            "task"
+        )
 
-        if action not in {"chat", "create_task"}:
+        if action not in {
+            "chat",
+            "create_task",
+        }:
+
             action = "chat"
 
         if action != "create_task":
+
             return {
                 "response": ai_text,
                 "action": "chat",
@@ -1403,6 +1735,7 @@ User request:
             }
 
         if task_data is None:
+
             return {
                 "response": ai_text,
                 "action": "chat",
@@ -1410,111 +1743,192 @@ User request:
                 "task": None,
             }
 
-        if isinstance(task_data, AITaskData):
-            task_dict = task_data.model_dump()
-        elif isinstance(task_data, dict):
+        if isinstance(
+            task_data,
+            AITaskData,
+        ):
+
+            task_dict = (
+                task_data.model_dump()
+            )
+
+        elif isinstance(
+            task_data,
+            dict,
+        ):
+
             task_dict = task_data
+
         else:
+
             task_dict = (
                 AITaskData
-                .model_validate(task_data)
+                .model_validate(
+                    task_data
+                )
                 .model_dump()
             )
 
         title = str(
-            task_dict.get("title", "") or ""
+            task_dict.get(
+                "title",
+                "",
+            )
+            or ""
         ).strip()
 
         if not title:
+
             raise ValueError(
-                "Gemini requested task creation but did not provide "
-                "a task title."
+                "Z.ai requested task creation "
+                "but did not provide a task title."
             )
 
         if len(title) > 200:
+
             raise ValueError(
-                "Gemini returned a task title longer than 200 characters."
+                "Z.ai returned a task title "
+                "longer than 200 characters."
             )
 
-        description_value = task_dict.get("description")
+        description_value = (
+            task_dict.get(
+                "description"
+            )
+        )
 
         description = (
             str(description_value).strip()
+
             if (
                 description_value is not None
-                and str(description_value).strip()
+                and str(
+                    description_value
+                ).strip()
             )
+
             else None
         )
 
-        if description is not None and len(description) > 2000:
+        if (
+            description is not None
+            and len(description) > 2000
+        ):
+
             raise ValueError(
-                "Gemini returned a task description longer than 2000 characters."
+                "Z.ai returned a task description "
+                "longer than 2000 characters."
             )
 
         priority = str(
-            task_dict.get("priority", "medium") or "medium"
+            task_dict.get(
+                "priority",
+                "medium",
+            )
+            or "medium"
         ).strip().lower()
 
-        if priority not in {"low", "medium", "high"}:
+        if priority not in {
+            "low",
+            "medium",
+            "high",
+        }:
+
             priority = "medium"
 
         try:
+
             estimated_minutes = int(
-                task_dict.get("estimated_minutes", 30) or 30
+                task_dict.get(
+                    "estimated_minutes",
+                    30,
+                )
+                or 30
             )
-        except (TypeError, ValueError):
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+
             estimated_minutes = 30
 
         if estimated_minutes < 1:
+
             estimated_minutes = 30
 
         if estimated_minutes > 1440:
+
             estimated_minutes = 1440
 
         deadline = None
-        deadline_value = task_dict.get("deadline")
+
+        deadline_value = task_dict.get(
+            "deadline"
+        )
 
         if deadline_value:
-            deadline_string = str(deadline_value).strip()
+
+            deadline_string = str(
+                deadline_value
+            ).strip()
 
             try:
-                deadline = datetime.fromisoformat(
-                    deadline_string
+
+                deadline = (
+                    datetime.fromisoformat(
+                        deadline_string
+                    )
                 )
 
                 if deadline.tzinfo is not None:
+
                     deadline = (
-                        deadline.astimezone()
-                        .replace(tzinfo=None)
+                        deadline
+                        .astimezone()
+                        .replace(
+                            tzinfo=None
+                        )
                     )
 
             except ValueError as error:
+
                 raise ValueError(
-                    f"Invalid deadline returned by Gemini: "
-                    f"{deadline_string}"
+                    "Invalid deadline returned "
+                    f"by Z.ai: {deadline_string}"
                 ) from error
 
         duplicate_task = (
             db.query(models.Task)
             .filter(
-                models.Task.user_id == current_user.id,
-                models.Task.title == title,
-                models.Task.status != "completed",
+                models.Task.user_id
+                == current_user.id,
+
+                models.Task.title
+                == title,
+
+                models.Task.status
+                != "completed",
             )
             .first()
         )
 
         if duplicate_task is not None:
+
             existing_task = (
                 TaskResponse
-                .model_validate(duplicate_task)
-                .model_dump(mode="json")
+                .model_validate(
+                    duplicate_task
+                )
+                .model_dump(
+                    mode="json"
+                )
             )
 
             return {
                 "response": (
-                    f'You already have an unfinished task called '
+                    "You already have an "
+                    "unfinished task called "
                     f'"{duplicate_task.title}".'
                 ),
                 "action": "chat",
@@ -1532,13 +1946,19 @@ User request:
         )
 
         db.add(new_task)
+
         db.commit()
+
         db.refresh(new_task)
 
         created_task = (
             TaskResponse
-            .model_validate(new_task)
-            .model_dump(mode="json")
+            .model_validate(
+                new_task
+            )
+            .model_dump(
+                mode="json"
+            )
         )
 
         return {
@@ -1547,29 +1967,49 @@ User request:
                 if ai_text
                 else f'Task created: "{title}".'
             ),
+
             "action": "create_task",
+
             "task_created": True,
+
             "task": created_task,
         }
 
     except HTTPException:
+
         raise
 
     except Exception as error:
+
         print()
+
         print("=" * 70)
-        print("GEMINI CHAT / TASK CREATION ERROR")
+
+        print(
+            "Z.AI CHAT / TASK CREATION ERROR"
+        )
+
         print("=" * 70)
-        print("ERROR TYPE:", type(error).__name__)
-        print("ERROR:", repr(error))
+
+        print(
+            "ERROR TYPE:",
+            type(error).__name__,
+        )
+
+        print(
+            "ERROR:",
+            repr(error),
+        )
+
         print("=" * 70)
+
         print()
 
         db.rollback()
 
         raise HTTPException(
             status_code=502,
-            detail=f"Gemini error: {str(error)}",
+            detail=f"Z.ai error: {str(error)}",
         )
 
 
@@ -1583,28 +2023,24 @@ User request:
 )
 @limiter.limit("5/minute")
 def plan_day(
-
     request: Optional[dict] = None,
-
     db: Session = Depends(get_db),
-
     current_user: models.User = Depends(
         get_current_user
     ),
-
 ):
 
     # --------------------------------------------------------
-    # Gemini check
+    # Z.ai check
     # --------------------------------------------------------
 
-    if gemini_client is None:
+    if zai_client is None:
 
         raise HTTPException(
             status_code=503,
             detail=(
-                "Gemini AI is not configured. "
-                "Add GEMINI_API_KEY to backend/.env "
+                "Z.ai AI is not configured. "
+                "Add ZAI_API_KEY to backend/.env "
                 "and restart the backend."
             ),
         )
@@ -1628,25 +2064,18 @@ def plan_day(
     # --------------------------------------------------------
 
     tasks = (
-
         db.query(models.Task)
-
         .filter(
-
             models.Task.user_id
             == current_user.id,
 
             models.Task.status
             != "completed",
-
         )
-
         .order_by(
             models.Task.created_at.asc()
         )
-
         .all()
-
     )
 
     # --------------------------------------------------------
@@ -1656,7 +2085,6 @@ def plan_day(
     if not tasks:
 
         return DayPlanResponse(
-
             summary=(
                 "You don't have any unfinished "
                 "tasks to schedule. Add some tasks "
@@ -1666,7 +2094,6 @@ def plan_day(
             schedule=[],
 
             unscheduled=[],
-
         )
 
     tasks_context = build_task_context(
@@ -1684,7 +2111,7 @@ Create a realistic schedule for the user's
 remaining day.
 
 You MUST return JSON matching the supplied
-response schema.
+response structure.
 
 RULES:
 
@@ -1736,6 +2163,43 @@ RULES:
 19. Do not create reminders.
 
 20. The schedule is for today only.
+
+Return ONLY valid JSON.
+
+Do not use markdown.
+
+Do not use code fences.
+
+Do not add any text before or after the JSON.
+
+The JSON must follow this structure:
+
+{
+  "summary": "short summary",
+  "schedule": [
+    {
+      "task_id": 123,
+      "title": "Task title",
+      "start": "10:00",
+      "end": "11:00",
+      "type": "task"
+    },
+    {
+      "task_id": null,
+      "title": "Break",
+      "start": "11:00",
+      "end": "11:15",
+      "type": "break"
+    }
+  ],
+  "unscheduled": [
+    {
+      "task_id": 456,
+      "title": "Task title",
+      "reason": "Not enough time remaining today."
+    }
+  ]
+}
 """
 
     # --------------------------------------------------------
@@ -1764,86 +2228,71 @@ the remaining part of today.
 """
 
     # --------------------------------------------------------
-    # Gemini structured response
+    # Z.ai structured response
     # --------------------------------------------------------
 
     try:
 
-        response = gemini_client.models.generate_content(
+        response = zai_client.chat.completions.create(
+            model=ZAI_MODEL,
 
-            model=GEMINI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": instructions,
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
 
-            contents=prompt,
+            temperature=0.2,
 
-            config=types.GenerateContentConfig(
-
-                system_instruction=instructions,
-
-                response_mime_type="application/json",
-
-                response_schema=DayPlanResponse,
-
-
-                max_output_tokens=2500,
-
-            ),
-
+            max_tokens=2500,
         )
 
         raw_text = (
-            response.text
-            if response.text
+            response.choices[0]
+            .message
+            .content
+            if response.choices
             else ""
         )
 
         if not raw_text:
 
             raise ValueError(
-                "Gemini returned an empty response."
+                "Z.ai returned an empty response."
             )
 
-        # ----------------------------------------------------
-        # Parse JSON
-        # ----------------------------------------------------
+        raw_text = raw_text.strip()
 
-        try:
+        if raw_text.startswith(
+            "```json"
+        ):
 
-            parsed = json.loads(
-                raw_text
-            )
+            raw_text = raw_text[7:]
 
-        except json.JSONDecodeError:
+        elif raw_text.startswith(
+            "```"
+        ):
 
-            cleaned = raw_text.strip()
+            raw_text = raw_text[3:]
 
-            if cleaned.startswith(
-                "```json"
-            ):
+        if raw_text.endswith(
+            "```"
+        ):
 
-                cleaned = cleaned[7:]
+            raw_text = raw_text[:-3]
 
-            elif cleaned.startswith(
-                "```"
-            ):
+        parsed = json.loads(
+            raw_text.strip()
+        )
 
-                cleaned = cleaned[3:]
-
-            if cleaned.endswith(
-                "```"
-            ):
-
-                cleaned = cleaned[:-3]
-
-            parsed = json.loads(
-                cleaned.strip()
-            )
-
-        # ----------------------------------------------------
-        # Validate
-        # ----------------------------------------------------
-
-        plan = DayPlanResponse.model_validate(
-            parsed
+        plan = (
+            DayPlanResponse
+            .model_validate(parsed)
         )
 
         return plan
@@ -1851,16 +2300,30 @@ the remaining part of today.
     except Exception as error:
 
         print()
+
         print("=" * 70)
-        print("GEMINI PLAN DAY ERROR")
-        print("=" * 70)
+
         print(
-            repr(error)
+            "Z.AI PLAN DAY ERROR"
         )
+
         print("=" * 70)
+
+        print(
+            "ERROR TYPE:",
+            type(error).__name__,
+        )
+
+        print(
+            "ERROR:",
+            repr(error),
+        )
+
+        print("=" * 70)
+
         print()
 
         raise HTTPException(
             status_code=502,
-            detail=f"Gemini plan error: {str(error)}",
+            detail=f"Z.ai plan error: {str(error)}",
         )
